@@ -2105,6 +2105,8 @@ AIO 用来解决数据复制阶段的阻塞问题
 >
 > * Windows 系统通过 IOCP 实现了真正的异步 IO
 > * Linux 系统异步 IO 在 2.6 版本引入，但其底层实现还是用多路复用模拟了异步 IO，性能没有优势
+> * Netty 已经推出了 io_uring 的原生传输实现。如果你的 Linux 内核在 5.9 以上，你可以在 Netty 中把 EpollEventLoopGroup 换成 IOUringEventLoopGroup。
+> * 实测效果： 在某些极端高并发的磁盘 I/O 或大流量网络测试中，吞吐量能提升 10%~25%，延迟更低。
 
 
 
@@ -2167,7 +2169,8 @@ public class AioDemo1 {
 
 #### 💡 守护线程
 
-默认文件 AIO 使用的线程都是守护线程，所以最后要执行 `System.in.read()` 以避免守护线程意外结束
+默认文件 AIO 使用的线程都是守护线程，所以最后要执行 `System.in.read()` 以避免守护线程意外结束,commonPool 里的所有工作线程，默认都被设置为 daemon = true（守护线程）。
+如果没有传自定义的线程池默认使用的是 ForkJoinPool.commonPool()
 
 
 
