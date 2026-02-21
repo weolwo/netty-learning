@@ -72,6 +72,7 @@ public class RpcClientManager {
                     return;
                 }
                 int order = (MAX_RETRY - retry) + 1;
+                // 指数退避：等待时间随次数增加，防止把服务端冲垮
                 int delay = 1 << order;
                 System.err.println("连接失败，第" + order + "次重连，等待" + delay + "秒...");
 
