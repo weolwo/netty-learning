@@ -43,7 +43,7 @@ public interface Serializer {
 
 ```java
 enum SerializerAlgorithm implements Serializer {
-	// Java 实现
+	// JAVA 实现
     Java {
         @Override
         public <T> T deserialize(Class<T> clazz, byte[] bytes) {
@@ -53,7 +53,7 @@ enum SerializerAlgorithm implements Serializer {
                 Object object = in.readObject();
                 return (T) object;
             } catch (IOException | ClassNotFoundException e) {
-                throw new RuntimeException("SerializerAlgorithm.Java 反序列化错误", e);
+                throw new RuntimeException("SerializerAlgorithm.JAVA 反序列化错误", e);
             }
         }
 
@@ -64,11 +64,11 @@ enum SerializerAlgorithm implements Serializer {
                 new ObjectOutputStream(out).writeObject(object);
                 return out.toByteArray();
             } catch (IOException e) {
-                throw new RuntimeException("SerializerAlgorithm.Java 序列化错误", e);
+                throw new RuntimeException("SerializerAlgorithm.JAVA 序列化错误", e);
             }
         }
     }, 
-    // Json 实现(引入了 Gson 依赖)
+    // JSON 实现(引入了 Gson 依赖)
     Json {
         @Override
         public <T> T deserialize(Class<T> clazz, byte[] bytes) {
@@ -666,10 +666,86 @@ public class ServicesFactory {
 
 ```
 serializer.algorithm=Json
-cn.itcast.server.service.HelloService=cn.itcast.server.service.HelloServiceImpl
+service.server.com.owen.HelloService=service.server.com.owen.HelloServiceImpl
 ```
 
-
+>由于Gson 在序列化和反序列化class对象是报错，我们需要手动注册一个自定义的转换器，以下2种实现方式，
+>
+>### 架构层面的对比
+>
+>| 特性           | 第一种 (JsonSerializer/Deserializer) | 第二种 (TypeAdapter)           |
+>| -------------- | ------------------------------------ | ------------------------------ |
+>| **运行效率**   | 较慢（涉及中间树结构）               | **极快（直接读写流）**         |
+>| **内存占用**   | 较高（产生 JsonElement 实例）        | **极低（几乎不产生多余实例）** |
+>| **代码灵活度** | 高（API 简单好用）                   | 中（需要处理流式边界）         |
+>| **适用场景**   | 偶尔用的配置、低频接口               | **高频 RPC、大数据量序列化**   |
+>
+>```
+>  JSON {
+>        @Override
+>        public <T> T deserialize(Class<T> clazz, byte[] bytes) {
+>            Gson gson = new GsonBuilder().registerTypeHierarchyAdapter(Class.class, new ClassCodec()).create();
+>            String json = new String(bytes, StandardCharsets.UTF_8);
+>            return gson.fromJson(json, clazz);
+>        }
+>
+>        @Override
+>        public <T> byte[] serialize(T object) {
+>            Gson gson = new GsonBuilder().registerTypeHierarchyAdapter(Class.class, new ClassCodec()).create();
+>            String json = gson.toJson(object);
+>            return json.getBytes(StandardCharsets.UTF_8);
+>        }
+>    }
+>}
+>
+>/**
+> *  
+> */
+>
+>class ClassCodec extends TypeAdapter<Class<?>> {
+>    @Override
+>    public void write(JsonWriter out, Class<?> value) throws IOException {
+>        // 序列化：把 Class 变成字符串 "java.lang.String"
+>        if (value == null) {
+>            out.nullValue();
+>        } else {
+>            out.value(value.getName());
+>        }
+>    }
+>
+>    @Override
+>    public Class<?> read(JsonReader in) throws IOException {
+>        // 反序列化：根据字符串 Class.forName 找回类对象
+>        try {
+>            return Class.forName(in.nextString());
+>        } catch (ClassNotFoundException e) {
+>            throw new IOException("自研协议找不到指定的类，系统血统不匹配", e);
+>        }
+>    }
+>}
+>
+>/**
+> * Gson 不知道怎么吧java class 对象进行转换，所以需要自己协议额转换器注册到gson的构造器里面，后面用的时候需要用这个到构造器的gson
+> */
+>class ClassCodec implements JsonSerializer<Class<?>>, JsonDeserializer<Class<?>> {
+>
+>    @Override
+>    public Class<?> deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) throws JsonParseException {
+>        try {
+>            String str = json.getAsString();
+>            return Class.forName(str);
+>        } catch (ClassNotFoundException e) {
+>            throw new JsonParseException(e);
+>        }
+>    }
+>
+>    @Override             //   String.class
+>    public JsonElement serialize(Class<?> src, Type typeOfSrc, JsonSerializationContext context) {
+>        // class -> json
+>        return new JsonPrimitive(src.getName());
+>    }
+>}
+>```
 
 #### 2）服务器 handler
 
@@ -738,7 +814,7 @@ public class RpcClient {
 
             ChannelFuture future = channel.writeAndFlush(new RpcRequestMessage(
                     1,
-                    "cn.itcast.server.service.HelloService",
+                    "service.server.com.owen.HelloService",
                     "sayHello",
                     String.class,
                     new Class[]{String.class},
@@ -1444,7 +1520,7 @@ protected void run() {
 
 参考下图
 
-<img src="img/0032.png"  />
+<img src="../img/0032.png"  />
 
 
 
