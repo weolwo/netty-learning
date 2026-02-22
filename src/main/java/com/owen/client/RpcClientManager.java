@@ -122,6 +122,11 @@ public class RpcClientManager {
         Class<?>[] interfaces = new Class[]{serviceClass};
         //                                                            sayHello  "张三"
         Object o = Proxy.newProxyInstance(loader, interfaces, (proxy, method, args) -> {
+            // 1. 获取 Channel 并存为局部变量，确保本轮调用链路稳定
+            Channel currentChannel = getChannel();
+            if (currentChannel == null || !currentChannel.isActive()) {
+                throw new RuntimeException("链路未就绪，拒绝请求");
+            }
             // 1. 将方法调用转换为 消息对象
             int sequenceId = SequenceIdGenerator.nextId();
             RpcRequestMessage msg = new RpcRequestMessage(
@@ -132,28 +137,31 @@ public class RpcClientManager {
                     method.getParameterTypes(),
                     args
             );
-            getChannel().writeAndFlush(msg);
-            if (channel == null) {
-                return null;
-            }
             // 2. 将消息对象发送出去
 
             // 3. 准备一个空 Promise 对象，来接收结果             指定 promise 对象异步接收结果线程
-            DefaultPromise<Object> promise = new DefaultPromise<>(channel.eventLoop());
+            DefaultPromise<Object> promise = new DefaultPromise<>(currentChannel.eventLoop());
             RpcResponseMessageHandler.PROMISES.put(sequenceId, promise);
+            try {
+                // 4. 发送消息，并添加发送失败的监听
+                currentChannel.writeAndFlush(msg).addListener(f -> {
+                    if (!f.isSuccess()) {
+                        promise.setFailure(f.cause());
+                    }
+                });
 
-//            promise.addListener(future -> {
-//                // 线程
-//            });
+                // 5. 等待结果（建议加超时时间，不要无限等）
+                promise.await(5000, TimeUnit.MILLISECONDS);
 
-            // 4. 等待 promise 结果
-            promise.await();
-            if (promise.isSuccess()) {
-                // 调用正常
-                return promise.getNow();
-            } else {
-                // 调用失败
-                throw new RuntimeException(promise.cause());
+                if (promise.isSuccess()) {
+                    return promise.getNow();
+                } else {
+                    throw new RuntimeException(promise.cause());
+                }
+            } catch (InterruptedException | RuntimeException e) {
+                throw new RuntimeException(e);
+            } finally {
+                RpcResponseMessageHandler.PROMISES.remove(sequenceId);
             }
         });
         return (T) o;
