@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
  */
 public interface Serializer {
 
+
     // 反序列化方法
     <T> T deserialize(Class<T> clazz, byte[] bytes);
 
@@ -23,6 +24,7 @@ public interface Serializer {
     <T> byte[] serialize(T object);
 
     enum Algorithm implements Serializer {
+
 
         JAVA {
             @Override
@@ -49,29 +51,66 @@ public interface Serializer {
         },
 
         JSON {
+
+            // 提前初始化，线程安全
+            private final Gson gson = new GsonBuilder()
+                    .registerTypeHierarchyAdapter(Class.class, new JsonCodec())
+                    .create();
+
             @Override
             public <T> T deserialize(Class<T> clazz, byte[] bytes) {
-                Gson gson = new GsonBuilder().registerTypeHierarchyAdapter(Class.class, new JsonCodec()).create();
                 String json = new String(bytes, StandardCharsets.UTF_8);
                 return gson.fromJson(json, clazz);
             }
 
             @Override
             public <T> byte[] serialize(T object) {
-                Gson gson = new GsonBuilder().registerTypeHierarchyAdapter(Class.class, new JsonCodec()).create();
                 String json = gson.toJson(object);
                 return json.getBytes(StandardCharsets.UTF_8);
             }
         },
         HESSIAN {
+            // 使用 ThreadLocal 复用输出流，减少 GC 压力
+            private final ThreadLocal<ByteArrayOutputStream> BOS_THREAD_LOCAL =
+                    ThreadLocal.withInitial(ByteArrayOutputStream::new);
+
+            private final ThreadLocal<ReusableByteArrayInputStream> BIS_THREAD_LOCAL =
+                    ThreadLocal.withInitial(ReusableByteArrayInputStream::new);
+
+            // 2. 复用 Hessian2Input 实例
+            private final ThreadLocal<Hessian2Input> HESSIAN_IN_THREAD_LOCAL =
+                    ThreadLocal.withInitial(() -> new Hessian2Input(null));
+
+            private final ThreadLocal<Hessian2Output> HESSIAN_out_THREAD_LOCAL =
+                    ThreadLocal.withInitial(() -> new Hessian2Output(null));
+
             @Override
             public <T> T deserialize(Class<T> clazz, byte[] bytes) {
-                return HessianCodec.deserialize(bytes);
+
+                try {
+                    ReusableByteArrayInputStream is = BIS_THREAD_LOCAL.get();
+                    is.setBuf(bytes); // 重置索引，复用内存
+                    Hessian2Input hi = HESSIAN_IN_THREAD_LOCAL.get();
+                    hi.init(is);
+                    return (T) hi.readObject(clazz);
+                } catch (IOException e) {
+                    throw new RuntimeException("Hessian反序列化失败，逻辑闭环断裂", e);
+                }
             }
 
             @Override
             public <T> byte[] serialize(T object) {
-                return HessianCodec.serialize(object);
+                ByteArrayOutputStream bos = BOS_THREAD_LOCAL.get();
+                bos.reset(); // 重置索引，复用内存
+                try {
+                    Hessian2Output ho = HESSIAN_out_THREAD_LOCAL.get();
+                    ho.init(bos);
+                    ho.writeObject(object);
+                    ho.flushBuffer();
+                    return bos.toByteArray();
+                } catch (IOException e) {
+                    throw new RuntimeException("Hessian 序列化失败", e);
+                }
             }
         }
 
@@ -103,33 +142,24 @@ public interface Serializer {
         }
     }
 
-    class HessianCodec {
-
-        public static byte[] serialize(Object obj) {
-
-            try (ByteArrayOutputStream os = new ByteArrayOutputStream()) {
-                Hessian2Output ho = new Hessian2Output(os);
-                ho.writeObject(obj);
-                ho.flushBuffer();
-                ho.close();
-                return os.toByteArray();
-            } catch (IOException e) {
-                throw new RuntimeException("Hessian序列化失败，链路受阻", e);
-            }
+    /**
+     * 一个简单的包装类，允许直接替换内部的 byte[]
+     */
+    class ReusableByteArrayInputStream extends ByteArrayInputStream {
+        public ReusableByteArrayInputStream() {
+            super(new byte[0]);
         }
 
-        public static <T> T deserialize(byte[] data) {
+        public void setBuf(byte[] buf) {
+            this.buf = buf;
+            this.pos = 0;
+            this.count = buf.length;
+        }
 
-            try (ByteArrayInputStream is = new ByteArrayInputStream(data)) {
-                Hessian2Input hi = new Hessian2Input(is);
-                hi.close();
-                return (T) hi.readObject();
-            } catch (IOException e) {
-                throw new RuntimeException("Hessian反序列化失败，逻辑闭环断裂", e);
-            }
+        public void clear() {
+            this.buf = null; // 释放引用，方便 GC
         }
     }
-
     /**
      * Gson 不知道怎么吧java class 对象进行转换，所以需要自己协议额转换器注册到gson的构造器里面，后面用的时候需要用这个到构造器的gson
      */
